@@ -33,6 +33,38 @@ So we wrote a script. If your machine has more than 10% of its RAM available, it
 - Logs every sample to CSV for when the auditors arrive
 - Ships with 14 tests, more than the DRAM market has had sensible outcomes
 - Is written in bash, as an Electron version would have solved the problem by using all the RAM
+- Now also on Windows, with a GUI that is still not Electron (see below)
+
+## Windows, with a window
+
+This fork adds a Windows version with a GUI. It's plain Python and tkinter, so there's nothing to install beyond [Python 3.10+](https://www.python.org/downloads/windows/), and it still uses less RAM than the Electron version we didn't write.
+
+```bash
+git clone https://github.com/qcom-toolbox/ram-altman.git
+cd ram-altman
+python ram_altman.py
+```
+
+Or double-click `Ram-Altman.pyw` to open it with no console window.
+
+- **The evidence against you:** total, used and available RAM, live, with a bar showing where your 10% threshold sits.
+- **Email settings:** To, From, your name, the threshold and your SMTP server. The password goes into Windows Credential Manager, not a file. Gmail and Outlook want an [app password](https://support.google.com/accounts/answer/185833). "Send a test email to myself" checks the settings without bothering Sam.
+- **Preview:** the dry run. Press "Another one" until you've read all the jokes.
+- **Schedule:** "Turn on" creates a Windows scheduled task (the cron equivalent) that runs every 5 minutes, even with the window closed, and sends at most one email a day. "Turn off" removes it.
+- **Audit:** every sample, and your machine's real share of RAM in use versus the claimed 5%.
+
+On Windows, "available" is free memory plus the standby list, which is the cache Windows hands back the moment a program asks. It's the same idea as `MemAvailable` on Linux, so the cache counts as available here too.
+
+From a terminal it behaves like the bash script:
+
+```bash
+python ram_altman.py --status    # see the evidence against you
+python ram_altman.py --dry-run   # preview an email without sending it
+python ram_altman.py --run       # what the scheduled task runs
+python -m unittest test_ram_altman -v
+```
+
+Settings, the log (`usage.csv`) and `runs.log` (the result of each scheduled run) live in `%LOCALAPPDATA%am-altman`. The `RAM_ALTMAN_*` environment variables below still override the saved settings, along with `RAM_ALTMAN_SMTP_HOST`, `_PORT`, `_SECURITY`, `_USER` and `_PASSWORD`. The Python version also runs on Linux, where it falls back to `sendmail` if you leave the SMTP server empty.
 
 ## A sample of today's correspondence
 
@@ -69,7 +101,7 @@ Strictly speaking, the page cache is doing useful work, so counting it as availa
 
 On kernels older than 3.14, which have no `MemAvailable`, the script estimates it from free memory plus reclaimable cache. If you're on one of those, your RAM may be safe. Nobody's coming for that.
 
-## Installation
+## Installation (Linux, bash)
 
 You'll need Linux, bash, and a working `sendmail`, `msmtp` or `mail` command. Your RAM is assumed.
 
