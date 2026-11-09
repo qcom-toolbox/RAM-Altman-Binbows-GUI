@@ -38,6 +38,9 @@ APP_NAME = "ram-altman"
 TASK_NAME = "Ram-Altman"
 MAX_LOG_BYTES = 10 * 1024 * 1024
 LOG_LINES_TO_KEEP = 50000
+# These go to a real person's inbox, so there's a ceiling on how chatty it gets.
+MAX_PER_DAY = 3
+MIN_GAP_HOURS = 3
 CSV_HEADER = "timestamp,total_kb,used_kb,available_kb,available_pct\n"
 
 
@@ -77,6 +80,7 @@ DEFAULTS = {
     "from": "",
     "from_name": "",
     "threshold": 10,
+    "per_day": 1,                  # emails a day, capped at MAX_PER_DAY
     "smtp_host": "",
     "smtp_port": 587,
     "smtp_security": "starttls",   # starttls | ssl | none
@@ -89,6 +93,7 @@ ENV_OVERRIDES = {
     "from": "RAM_ALTMAN_FROM",
     "from_name": "RAM_ALTMAN_FROM_NAME",
     "threshold": "RAM_ALTMAN_THRESHOLD",
+    "per_day": "RAM_ALTMAN_PER_DAY",
     "smtp_host": "RAM_ALTMAN_SMTP_HOST",
     "smtp_port": "RAM_ALTMAN_SMTP_PORT",
     "smtp_security": "RAM_ALTMAN_SMTP_SECURITY",
@@ -114,6 +119,10 @@ def load_config() -> dict:
         cfg["threshold"] = int(cfg["threshold"])
     except (TypeError, ValueError):
         raise RamAltmanError(f"threshold must be a whole number, got {cfg['threshold']!r}")
+    try:
+        cfg["per_day"] = min(max(int(cfg["per_day"]), 1), MAX_PER_DAY)
+    except (TypeError, ValueError):
+        raise RamAltmanError(f"emails per day must be a whole number, got {cfg['per_day']!r}")
     try:
         cfg["smtp_port"] = int(cfg["smtp_port"])
     except (TypeError, ValueError):
@@ -179,7 +188,8 @@ def get_password() -> str:
     try:
         cred = pcred.contents
         blob = ctypes.string_at(cred.CredentialBlob, cred.CredentialBlobSize)
-        return blob.decode("utf-16-le")
+        # Pasted passwords often bring a line break along; no provider wants it.
+        return blob.decode("utf-16-le").strip()
     finally:
         _advapi.CredFree(pcred)
 
@@ -187,6 +197,7 @@ def get_password() -> str:
 def set_password(password: str, username: str = "") -> None:
     if not IS_WINDOWS:
         raise RamAltmanError("saving the password needs Windows; set RAM_ALTMAN_SMTP_PASSWORD instead")
+    password = password.strip()
     if not password:
         _advapi.CredDeleteW(CRED_TARGET, _CRED_TYPE_GENERIC, 0)
         return
@@ -423,7 +434,8 @@ def pick(name: str, count: int, dry_run: bool) -> int:
     return nxt
 
 
-def compose_email(mem: Memory, sender_name: str, dry_run: bool = False) -> tuple[str, str]:
+def compose_email(mem: Memory, sender_name: str, dry_run: bool = False,
+                  per_day: int = 1) -> tuple[str, str]:
     total = to_gib(mem.total_kb)
     available = to_gib(mem.available_kb)
     pct = mem.available_pct
@@ -471,10 +483,14 @@ def compose_email(mem: Memory, sender_name: str, dry_run: bool = False) -> tuple
 
     body = (
         f"Hi Sam,\n\n{body_text}\n\n{signoff}\n{sender_name or 'A concerned RAM owner'}\n\n"
-        "--\nSent automatically, at most once a day, by a small script on one PC.\n"
+        f"--\nSent automatically, at most {how_often(per_day)}, by a small script on one PC.\n"
         "Reply if you'd like it to stop.\n"
     )
     return subject, body
+
+
+def how_often(per_day: int) -> str:
+    return {1: "once a day", 2: "twice a day"}.get(per_day, f"{per_day} times a day")
 
 
 def build_message(cfg: dict, subject: str, body: str, to: str | None = None) -> EmailMessage:
@@ -527,9 +543,15 @@ def smtp_send(cfg: dict, msg: EmailMessage) -> None:
                 server.login(cfg["smtp_user"], get_password())
             server.send_message(msg)
     except smtplib.SMTPAuthenticationError as exc:
+        hint = "Use an app password, and check the username is the one the provider expects."
+        user = cfg["smtp_user"].lower()
+        if host.lower().endswith("mail.me.com"):
+            hint = ("For iCloud, the username must be your @icloud.com (or @me.com) address and "
+                    "the password an app-specific password made on that same Apple Account.")
+            if not user.endswith(("@icloud.com", "@me.com", "@mac.com")):
+                hint = f"{cfg['smtp_user']} is not an iCloud Mail address. " + hint
         raise RamAltmanError(
-            f"the server rejected the username or password ({exc.smtp_code}). "
-            "Use an app password, and check the username is the one the provider expects.") from exc
+            f"login refused: {exc.smtp_code} {exc.smtp_error.decode(errors='replace')}. {hint}") from exc
     except smtplib.SMTPSenderRefused as exc:
         raise RamAltmanError(
             f"the server refused to send as {exc.sender}: {exc.smtp_code} "
@@ -580,8 +602,8 @@ class _Lock:
             self.fh.close()
 
 
-def run_once(today: str | None = None) -> str:
-    """Log a sample and send the daily email if due. Returns what happened."""
+def run_once(today: str | None = None, now: _dt.datetime | None = None) -> str:
+    """Log a sample and send an email if one is due. Returns what happened."""
     cfg = load_config()
     if not cfg["to"]:
         raise RamAltmanError("recipient (To) is not set")
@@ -599,30 +621,62 @@ def run_once(today: str | None = None) -> str:
         if not mem.is_over_threshold(cfg["threshold"]):
             return f"sample logged; available RAM is not above {cfg['threshold']}%, no email"
 
-        today = today or _dt.date.today().isoformat()
-        try:
-            last_sent = last_sent_file().read_text().strip()
-        except OSError:
-            last_sent = ""
-        if last_sent == today:
-            return "sample logged; today's email has already gone"
+        now = now or _dt.datetime.now()
+        today = today or now.date().isoformat()
+        day, count, last_time = sent_state()
+        if day != today:
+            count, last_time = 0, None
+        per_day = cfg["per_day"]
+        if count >= per_day:
+            return ("sample logged; today's email has already gone" if per_day == 1 else
+                    f"sample logged; all {per_day} of today's emails have gone")
+        if last_time and now - last_time < _dt.timedelta(hours=MIN_GAP_HOURS):
+            nxt = (last_time + _dt.timedelta(hours=MIN_GAP_HOURS)).strftime("%H:%M")
+            return f"sample logged; next email can go after {nxt}"
 
-        subject, body = compose_email(mem, cfg["from_name"])
+        subject, body = compose_email(mem, cfg["from_name"], per_day=per_day)
         try:
             send_email(cfg, build_message(cfg, subject, body))
         except Exception as exc:
             raise RamAltmanError(f"{exc}; will try again on the next run") from exc
 
         # Recorded only after a successful send, so a failure gets retried.
-        last_sent_file().write_text(f"{today}\n")
-        return f"sample logged; email sent: {subject}"
+        last_sent_file().write_text(f"{today} {count + 1} {now.strftime('%H:%M:%S')}\n")
+        return f"sample logged; email sent ({count + 1} of {per_day} today): {subject}"
+
+
+def sent_state() -> tuple[str, int, _dt.datetime | None]:
+    """(date of the last send, emails sent that day, time of the last send).
+
+    last_sent holds "DATE COUNT TIME"; files from older versions hold just the date.
+    """
+    try:
+        parts = last_sent_file().read_text().split()
+    except OSError:
+        return "", 0, None
+    if not parts:
+        return "", 0, None
+    day = parts[0]
+    try:
+        count = int(parts[1]) if len(parts) > 1 else 1
+    except ValueError:
+        count = 1
+    last_time = None
+    if len(parts) > 2:
+        try:
+            last_time = _dt.datetime.fromisoformat(f"{day}T{parts[2]}")
+        except ValueError:
+            pass
+    return day, count, last_time
 
 
 def last_sent() -> str:
-    try:
-        return last_sent_file().read_text().strip()
-    except OSError:
+    day, count, last_time = sent_state()
+    if not day:
         return ""
+    if last_time:
+        return f"{day} at {last_time.strftime('%H:%M')} ({count} that day)"
+    return day
 
 
 # ----------------------------------------------------------------------------
@@ -674,7 +728,7 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatt
     -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 Register-ScheduledTask -TaskName {_psq(name)} -Action $action -Trigger $trigger `
-    -Settings $settings -Description 'Tells Sam Altman about your unused RAM, at most once a day.' `
+    -Settings $settings -Description 'Tells Sam Altman about your unused RAM, a few times a day at most.' `
     -Force | Out-Null
 """
     r = _ps(script)

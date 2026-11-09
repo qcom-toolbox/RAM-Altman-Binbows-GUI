@@ -224,8 +224,8 @@ class App(ttk.Frame):
         self.tabs.add(tab, text="Schedule")
         ttk.Label(tab, text="Background checks", style="Head.TLabel").pack(anchor="w")
         ttk.Label(tab, style="Muted.TLabel", wraplength=560, text=(
-            "A Windows scheduled task samples your RAM every 5 minutes and sends at most one "
-            "email a day, even while this window is closed. If a send fails, it tries again "
+            "A Windows scheduled task samples your RAM every 5 minutes and sends up to the "
+            "emails per day you choose, even while this window is closed. If a send fails, it tries again "
             "on the next run.")).pack(anchor="w", pady=(2, 8))
 
         self.task_status = tk.StringVar(value="Checking…")
@@ -235,6 +235,16 @@ class App(ttk.Frame):
         self.task_button = ttk.Button(row, text="…", command=self.toggle_task, state="disabled")
         self.task_button.pack(side="left")
         ttk.Button(row, text="Check now", command=self.check_now).pack(side="left", padx=8)
+
+        per_day = ttk.Frame(tab)
+        per_day.pack(anchor="w", pady=(0, 8))
+        ttk.Label(per_day, text="Emails per day").pack(side="left")
+        self.fields["per_day"] = tk.StringVar(value=str(self.cfg.get("per_day", 1)))
+        ttk.Spinbox(per_day, from_=1, to=core.MAX_PER_DAY, width=4, state="readonly",
+                    textvariable=self.fields["per_day"]).pack(side="left", padx=8)
+        ttk.Label(per_day, style="Muted.TLabel", text=(
+            f"up to {core.MAX_PER_DAY}, at least {core.MIN_GAP_HOURS} hours apart. "
+            "It's a real person's inbox.")).pack(side="left")
 
         self.watch = tk.BooleanVar(value=False)
         ttk.Checkbutton(tab, text="Also check every 5 minutes while this window is open",
@@ -273,13 +283,15 @@ class App(ttk.Frame):
 
     def _form_config(self) -> dict:
         cfg = {k: v.get().strip() for k, v in self.fields.items()}
-        for key in ("threshold", "smtp_port"):
+        for key in ("threshold", "smtp_port", "per_day"):
             try:
                 cfg[key] = int(cfg[key])
             except ValueError:
                 raise core.RamAltmanError(f"{key.replace('_', ' ')} must be a whole number")
         if not 0 <= cfg["threshold"] <= 100:
             raise core.RamAltmanError("threshold must be between 0 and 100")
+        if not 1 <= cfg["per_day"] <= core.MAX_PER_DAY:
+            raise core.RamAltmanError(f"emails per day must be between 1 and {core.MAX_PER_DAY}")
         return cfg
 
     def save(self) -> bool:
@@ -307,7 +319,8 @@ class App(ttk.Frame):
 
         def work():
             mem = self.mem or core.read_memory()
-            subject, body = core.compose_email(mem, cfg["from_name"], dry_run=True)
+            subject, body = core.compose_email(mem, cfg["from_name"], dry_run=True,
+                                                per_day=int(cfg.get("per_day", 1)))
             msg = core.build_message(cfg, "[Ram-Altman test] " + subject, body, to=cfg["from"])
             core.send_email(cfg, msg)
             return f"Test email sent to {cfg['from']}. Check your inbox."
@@ -321,7 +334,8 @@ class App(ttk.Frame):
             threshold = int(cfg["threshold"])
         except (TypeError, ValueError):
             threshold = 10
-        subject, body = core.compose_email(mem, cfg["from_name"], dry_run=True)
+        subject, body = core.compose_email(mem, cfg["from_name"], dry_run=True,
+                                                per_day=int(cfg.get("per_day", 1)))
         text = core.render_preview(cfg, subject, body)
         if not mem.is_over_threshold(threshold):
             text = (f"(Right now available RAM is not above {threshold}%, so no email would go "

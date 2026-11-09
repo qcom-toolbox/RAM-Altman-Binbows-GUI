@@ -50,7 +50,7 @@ Or double-click `Ram-Altman.pyw` to open it with no console window.
 - **The evidence against you:** total, used and available RAM, live, with a bar showing where your 10% threshold sits.
 - **Email settings:** To, From, your name, the threshold and your SMTP server. The password goes into Windows Credential Manager, not a file. Gmail and Outlook want an [app password](https://support.google.com/accounts/answer/185833). "Send a test email to myself" checks the settings without bothering Sam.
 - **Preview:** the dry run. Press "Another one" until you've read all the jokes.
-- **Schedule:** "Turn on" creates a Windows scheduled task (the cron equivalent) that runs every 5 minutes, even with the window closed, and sends at most one email a day. "Turn off" removes it.
+- **Schedule:** "Turn on" creates a Windows scheduled task (the cron equivalent) that runs every 5 minutes, even with the window closed. It sends one email a day by default. "Emails per day" goes up to 3, at least 3 hours apart, because it's still a real person's inbox, and the footer says how many to expect. "Turn off" removes it.
 - **Audit:** every sample, and your machine's real share of RAM in use versus the claimed 5%.
 
 On Windows, "available" is free memory plus the standby list, which is the cache Windows hands back the moment a program asks. It's the same idea as `MemAvailable` on Linux, so the cache counts as available here too.
@@ -64,7 +64,8 @@ python ram_altman.py --run       # what the scheduled task runs
 python -m unittest test_ram_altman -v
 ```
 
-Settings, the log (`usage.csv`) and `runs.log` (the result of each scheduled run) live in `%LOCALAPPDATA%am-altman`. The `RAM_ALTMAN_*` environment variables below still override the saved settings, along with `RAM_ALTMAN_SMTP_HOST`, `_PORT`, `_SECURITY`, `_USER` and `_PASSWORD`. The Python version also runs on Linux, where it falls back to `sendmail` if you leave the SMTP server empty.
+Settings, the log (`usage.csv`) and `runs.log` (the result of each scheduled run) live in `%LOCALAPPDATA%
+am-altman`. The `RAM_ALTMAN_*` environment variables below still override the saved settings, along with `RAM_ALTMAN_PER_DAY`, `RAM_ALTMAN_SMTP_HOST`, `_PORT`, `_SECURITY`, `_USER` and `_PASSWORD`. The Python version also runs on Linux, where it falls back to `sendmail` if you leave the SMTP server empty.
 
 ## A sample of today's correspondence
 

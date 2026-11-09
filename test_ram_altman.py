@@ -84,6 +84,39 @@ class RamAltmanTests(unittest.TestCase):
         core.run_once()
         self.assertEqual(len(self.outbox), 2, "just over 10%: email sent")
 
+    def test_several_a_day(self):
+        import datetime as dt
+        self.mem(16000000, 300000, 9000000, 200000, 8000000, 500000, 100000)
+        os.environ["RAM_ALTMAN_PER_DAY"] = "2"
+        try:
+            day = dt.datetime(2030, 5, 1, 8, 0)
+            core.run_once(now=day)
+            self.assertEqual(len(self.outbox), 1, "first of two sent")
+            self.assertIn("at most twice a day", self.outbox[0].get_content())
+            core.run_once(now=day + dt.timedelta(hours=2, minutes=59))
+            self.assertEqual(len(self.outbox), 1, "too soon: waits for the gap")
+            core.run_once(now=day + dt.timedelta(hours=3))
+            self.assertEqual(len(self.outbox), 2, "second sent after the gap")
+            core.run_once(now=day + dt.timedelta(hours=9))
+            self.assertEqual(len(self.outbox), 2, "two a day is the limit")
+            core.run_once(now=day + dt.timedelta(days=1))
+            self.assertEqual(len(self.outbox), 3, "next day starts again")
+
+            os.environ["RAM_ALTMAN_PER_DAY"] = "50"
+            self.assertEqual(core.load_config()["per_day"], core.MAX_PER_DAY, "capped")
+        finally:
+            os.environ.pop("RAM_ALTMAN_PER_DAY")
+
+    def test_old_last_sent_file_still_counts(self):
+        # Files written before this option hold just the date: that's one email today.
+        import datetime as dt
+        self.mem(16000000, 300000, 9000000, 200000, 8000000, 500000, 100000)
+        self.set_last_sent("2030-05-01")
+        core.run_once(now=dt.datetime(2030, 5, 1, 20, 0))
+        self.assertEqual(len(self.outbox), 0)
+        self.assertIn("at most once a day", core.compose_email(
+            core.read_memory(), "", dry_run=True)[1])
+
     def test_failed_send_is_retried(self):
         self.mem(16000000, 300000, 9000000, 200000, 8000000, 500000, 100000)
         self.set_last_sent("2000-01-01")
