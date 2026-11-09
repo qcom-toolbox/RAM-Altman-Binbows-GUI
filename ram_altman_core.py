@@ -526,6 +526,22 @@ def smtp_send(cfg: dict, msg: EmailMessage) -> None:
             if cfg["smtp_user"]:
                 server.login(cfg["smtp_user"], get_password())
             server.send_message(msg)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise RamAltmanError(
+            f"the server rejected the username or password ({exc.smtp_code}). "
+            "Use an app password, and check the username is the one the provider expects.") from exc
+    except smtplib.SMTPSenderRefused as exc:
+        raise RamAltmanError(
+            f"the server refused to send as {exc.sender}: {exc.smtp_code} "
+            f"{exc.smtp_error.decode(errors='replace')}") from exc
+    except smtplib.SMTPRecipientsRefused as exc:
+        who = ", ".join(exc.recipients)
+        raise RamAltmanError(f"the server refused the recipient {who}: {exc.recipients}") from exc
+    except smtplib.SMTPDataError as exc:
+        raise RamAltmanError(
+            f"the server accepted the login but rejected the message: {exc.smtp_code} "
+            f"{exc.smtp_error.decode(errors='replace')}. This usually means the From address "
+            f"({msg['From']}) isn't an address on the account you signed in with.") from exc
     except (OSError, smtplib.SMTPException) as exc:
         raise RamAltmanError(f"email failed to send: {exc}") from exc
 
